@@ -11,38 +11,24 @@ const API_KEY = process.env.DATAGOV_API_KEY;
 const CAPACITY_RESOURCE_ID = process.env.CAPACITY_RESOURCE_ID;
 const YEARWISE_RESOURCE_ID = process.env.YEARWISE_RESOURCE_ID;
 
-// ── Field index maps (for array-format records) ───────────────────────────────
-// Capacity API fields (from data.gov.in screenshot):
-//   0=Sl.No, 1=State/UT, 2=Small Hydro Power, 3=Wind Power,
-//   4=Bio Power, 5=Solar Power, 6=Large Hydro, 7=Total Capacity
+// ── Field index maps ───────────────────────────────────────────────────────────
 const CAP = { state: 1, smallHydro: 2, wind: 3, bio: 4, solar: 5, largeHydro: 6, total: 7 };
+const YR  = { source: 0, solar: 1, wind: 2, smallHydro: 3, largeHydro: 4 };
 
-// Yearwise API fields (from data.gov.in screenshot):
-//   0=Source(date string), 1=Solar, 2=Wind, 3=Small Hydro, 4=Large Hydro
-const YR = { source: 0, solar: 1, wind: 2, smallHydro: 3, largeHydro: 4 };
-
-// ── Generic fetch + debug logging ─────────────────────────────────────────────
+// ── Generic fetch ─────────────────────────────────────────────────────────────
 async function fetchAPI(resourceId, limit = 100) {
   if (!resourceId || !API_KEY) throw new Error("Missing resource ID or API_KEY");
-
   const url = `https://api.data.gov.in/resource/${resourceId}?api-key=${API_KEY}&format=json&limit=${limit}`;
   console.log(`[API] GET ${url.replace(API_KEY, "***")}`);
-
   const res = await fetch(url);
   if (!res.ok) throw new Error(`data.gov.in responded with status ${res.status}`);
-
   const json = await res.json();
-  console.log(`[API] Top-level keys: ${Object.keys(json).join(", ")}`);
-
-  // data.gov.in uses different keys across datasets
   const records = json.records ?? json.data ?? [];
-  console.log(`[API] Records: ${records.length}, format: ${Array.isArray(records[0]) ? "array" : "object"}`);
-  if (records[0]) console.log(`[API] Sample[0]:`, JSON.stringify(records[0]).slice(0, 200));
-
+  console.log(`[API] Records: ${records.length}`);
   return records;
 }
 
-// ── Pick a value from either an array record (by index) or object record ──────
+// ── Pick value from array or object record ────────────────────────────────────
 function pick(r, idx, ...keys) {
   if (Array.isArray(r)) return r[idx] ?? "";
   for (const k of keys) if (r[k] !== undefined) return r[k];
@@ -60,10 +46,7 @@ function transformStates(records) {
       const largeHydro = pick(r, CAP.largeHydro, "g", "large_hydro",       "Large Hydro");
       const bio        = pick(r, CAP.bio,        "e", "bio_power",         "Bio Power");
       const total      = pick(r, CAP.total,      "h", "total_capacity",    "Total Capacity");
-
-      // Skip blank rows, the header row, numeric-only rows, and summary totals
       if (!state || /^(total|sl\.?\s*no\.?)$/i.test(state) || /^\d+$/.test(state)) return null;
-
       return {
         state,
         solar:      parseFloat(solar)      || 0,
@@ -86,13 +69,11 @@ function transformYearwise(records) {
       const wind       = pick(r, YR.wind,       "c", "wind",        "Wind",        "wind_power");
       const smallHydro = pick(r, YR.smallHydro, "d", "small_hydro", "Small Hydro", "small_hydro_power");
       const largeHydro = pick(r, YR.largeHydro, "e", "large_hydro", "Large Hydro");
-
-      const yearMatch = rawSource.match(/\d{4}/);
-      const year = yearMatch ? yearMatch[0] : rawSource;
-
+      const yearMatch  = rawSource.match(/\d{4}/);
+      const year       = yearMatch ? yearMatch[0] : rawSource;
       return {
         year,
-        label:      rawSource,           // e.g. "As on 31.03.2014"
+        label:      rawSource,
         solar:      parseFloat(solar)      || 0,
         wind:       parseFloat(wind)       || 0,
         smallHydro: parseFloat(smallHydro) || 0,
@@ -101,6 +82,21 @@ function transformYearwise(records) {
     })
     .filter((r) => r.solar > 0 || r.wind > 0 || r.smallHydro > 0 || r.largeHydro > 0)
     .sort((a, b) => parseInt(a.year) - parseInt(b.year));
+}
+
+// ── Linear Regression helper ──────────────────────────────────────────────────
+function linearRegression(points) {
+  const n = points.length;
+  if (n < 2) return { slope: 0, intercept: points[0]?.y || 0 };
+  const sumX  = points.reduce((s, p) => s + p.x, 0);
+  const sumY  = points.reduce((s, p) => s + p.y, 0);
+  const sumXY = points.reduce((s, p) => s + p.x * p.y, 0);
+  const sumX2 = points.reduce((s, p) => s + p.x * p.x, 0);
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return { slope: 0, intercept: sumY / n };
+  const slope     = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  return { slope, intercept };
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -165,7 +161,129 @@ app.get("/api/summary", async (req, res) => {
   }
 });
 
-// ── Debug endpoints — visit these to inspect the raw API response ─────────────
+// ── NEW: Predict next-year capacity for a specific state ──────────────────────
+// Uses linear regression on national yearwise trends and applies the derived
+// growth rate to the state's current figures.
+app.get("/api/predict/:stateName", async (req, res) => {
+  try {
+    const [capRecords, yrRecords] = await Promise.all([
+      fetchAPI(CAPACITY_RESOURCE_ID, 50),
+      fetchAPI(YEARWISE_RESOURCE_ID, 100),
+    ]);
+
+    const states   = transformStates(capRecords);
+    const yearwise = transformYearwise(yrRecords);
+
+    const stateName = decodeURIComponent(req.params.stateName);
+    const stateData = states.find(
+      (s) => s.state.toLowerCase() === stateName.toLowerCase()
+    );
+    if (!stateData) return res.status(404).json({ error: "State not found" });
+
+    const sources = ["solar", "wind", "smallHydro", "largeHydro", "bio"];
+    const predictions = {};
+
+    // For bio we have no yearwise data, so use flat 5 % assumption
+    const BIO_GROWTH = 0.05;
+
+    sources.forEach((src) => {
+      if (src === "bio") {
+        const current = stateData.bio || 0;
+        predictions.bio = {
+          current,
+          predicted:   +(current * (1 + BIO_GROWTH)).toFixed(2),
+          growthRate:  BIO_GROWTH * 100,
+          nextYear:    new Date().getFullYear() + 1,
+          method:      "assumed 5% YoY",
+        };
+        return;
+      }
+
+      const points = yearwise
+        .filter((d) => d[src] > 0)
+        .map((d)   => ({ x: parseInt(d.year), y: d[src] }));
+
+      if (points.length >= 2) {
+        const { slope, intercept } = linearRegression(points);
+        const lastYear       = points[points.length - 1].x;
+        const nextYear       = lastYear + 1;
+        const natPredicted   = slope * nextYear + intercept;
+        const natCurrent     = points[points.length - 1].y;
+        const growthRate     = natCurrent > 0 ? (natPredicted - natCurrent) / natCurrent : 0;
+        const stateCurrent   = stateData[src] || 0;
+
+        predictions[src] = {
+          current:    stateCurrent,
+          predicted:  +Math.max(0, stateCurrent * (1 + growthRate)).toFixed(2),
+          growthRate: +(growthRate * 100).toFixed(2),
+          nextYear,
+          method:     "linear regression on national trend",
+          
+          history: points.map((p) => ({ year: p.x, value: p.y })),
+        };
+      } else {
+        predictions[src] = {
+          current:   stateData[src] || 0,
+          predicted: stateData[src] || 0,
+          growthRate: 0,
+          nextYear:  new Date().getFullYear() + 1,
+          method:    "insufficient data",
+        };
+      }
+    });
+
+    res.json({ state: stateName, predictions });
+  } catch (err) {
+    console.error("[/api/predict]", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── NEW: Top energy sources nationally ───────────────────────────────────────
+app.get("/api/top-sources", async (req, res) => {
+  try {
+    const records = await fetchAPI(CAPACITY_RESOURCE_ID, 50);
+    const states  = transformStates(records);
+
+    let solar = 0, wind = 0, smallHydro = 0, largeHydro = 0, bio = 0;
+    states.forEach((s) => {
+      solar      += s.solar;
+      wind       += s.wind;
+      smallHydro += s.smallHydro;
+      largeHydro += s.largeHydro;
+      bio        += s.bio;
+    });
+
+    const total = solar + wind + smallHydro + largeHydro + bio;
+
+    const sources = [
+      { name: "Solar Power",      key: "solar",      value: solar,      color: "#EF9F27", icon: "☀️" },
+      { name: "Wind Power",       key: "wind",       value: wind,       color: "#378ADD", icon: "💨" },
+      { name: "Large Hydro",      key: "largeHydro", value: largeHydro, color: "#7F77DD", icon: "🌊" },
+      { name: "Small Hydro",      key: "smallHydro", value: smallHydro, color: "#1D9E75", icon: "💧" },
+      { name: "Bio Power",        key: "bio",        value: bio,        color: "#D85A30", icon: "🌿" },
+    ]
+      .map((s) => ({ ...s, share: total > 0 ? (s.value / total) * 100 : 0 }))
+      .sort((a, b) => b.value - a.value);
+
+    // Top-5 states for each source
+    const topStatesBySource = {};
+    sources.forEach(({ key }) => {
+      topStatesBySource[key] = [...states]
+        .filter((s) => (s[key] || 0) > 0)
+        .sort((a, b) => (b[key] || 0) - (a[key] || 0))
+        .slice(0, 5)
+        .map((s) => ({ state: s.state, value: s[key] || 0 }));
+    });
+
+    res.json({ sources, total, topStatesBySource });
+  } catch (err) {
+    console.error("[/api/top-sources]", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Debug endpoints ───────────────────────────────────────────────────────────
 app.get("/api/debug/capacity", async (req, res) => {
   try {
     const url = `https://api.data.gov.in/resource/${CAPACITY_RESOURCE_ID}?api-key=${API_KEY}&format=json&limit=3`;
@@ -183,5 +301,7 @@ app.get("/api/debug/yearwise", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`\n✅  Renewable API → http://localhost:${PORT}`);
   console.log(`🔍  Debug → http://localhost:${PORT}/api/debug/capacity`);
-  console.log(`🔍  Debug → http://localhost:${PORT}/api/debug/yearwise\n`);
+  console.log(`🔍  Debug → http://localhost:${PORT}/api/debug/yearwise`);
+  console.log(`🔮  Predict → http://localhost:${PORT}/api/predict/<StateName>`);
+  console.log(`🏆  Top Sources → http://localhost:${PORT}/api/top-sources\n`);
 });

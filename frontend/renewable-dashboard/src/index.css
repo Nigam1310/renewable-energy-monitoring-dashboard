@@ -1,3 +1,116 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+html.dark,
+html.dark body,
+html.dark #root {
+  background: #0f172a;
+  color-scheme: dark;
+}
+
+.dark .bg-gray-50 {
+  background-color: #0f172a !important;
+}
+
+.dark .bg-white,
+.dark .bg-white\/90 {
+  background-color: #111827 !important;
+}
+
+.dark .bg-gray-100,
+.dark .bg-gray-200 {
+  background-color: #1f2937 !important;
+}
+
+.dark .bg-yellow-50 {
+  background-color: #422006 !important;
+}
+
+.dark .bg-green-50 {
+  background-color: #052e16 !important;
+}
+
+.dark .bg-blue-50 {
+  background-color: #172554 !important;
+}
+
+.dark .bg-gradient-to-br {
+  background-image: linear-gradient(to bottom right, #0f172a, #052e16) !important;
+}
+
+.dark .text-gray-900 {
+  color: #f9fafb !important;
+}
+
+.dark .text-gray-800,
+.dark .text-gray-700 {
+  color: #e5e7eb !important;
+}
+
+.dark .text-gray-600,
+.dark .text-gray-500 {
+  color: #cbd5e1 !important;
+}
+
+.dark .text-gray-400 {
+  color: #94a3b8 !important;
+}
+
+.dark .text-yellow-800,
+.dark .text-yellow-700 {
+  color: #fde68a !important;
+}
+
+.dark .text-green-700,
+.dark .text-orange-700,
+.dark .text-blue-600 {
+  color: #93c5fd !important;
+}
+
+.dark .border-gray-100,
+.dark .border-gray-200,
+.dark .border-yellow-200 {
+  border-color: #334155 !important;
+}
+
+.dark .hover\:bg-gray-50:hover {
+  background-color: #1f2937 !important;
+}
+
+.dark .hover\:bg-green-50:hover {
+  background-color: #064e3b !important;
+}
+
+.dark .hover\:border-green-200:hover,
+.dark .hover\:border-blue-300:hover,
+.dark .hover\:border-gray-300:hover {
+  border-color: #475569 !important;
+}
+
+.dark table tr {
+  border-color: #334155 !important;
+}
+
+.dark .recharts-cartesian-grid line,
+.dark .recharts-polar-grid-angle line,
+.dark .recharts-polar-grid-concentric path {
+  stroke: #334155 !important;
+}
+
+.dark .recharts-text,
+.dark .recharts-legend-item-text {
+  fill: #cbd5e1 !important;
+  color: #cbd5e1 !important;
+}
+
+.dark .recharts-default-tooltip,
+.dark .recharts-tooltip-wrapper div {
+  background-color: #111827 !important;
+  border-color: #334155 !important;
+  color: #f9fafb !important;
+}
+
+.dark .rsm-geography {
+  stroke: #1f2937;
+}
